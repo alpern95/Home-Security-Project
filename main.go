@@ -1,6 +1,9 @@
 package main
 
 // Programe de surveillance
+// Ce projet s'inspire de https://github.com/a-bali/janitor.
+// Version
+// Tester lecture mqtt
 
 import (
 	
@@ -32,6 +35,12 @@ import (
 type Config struct {
 	Debug   bool
 	LogSize int
+	Alert struct {
+		Gotify struct {
+			Token  string
+			Server string
+		}
+        }
 }
 
 // TimedEntry stores a string with timestamp.
