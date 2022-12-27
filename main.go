@@ -1,6 +1,6 @@
 package main
 
-// Programe de suveillance
+// Programe de surveillance
 
 import (
 	"context"
