@@ -9,13 +9,13 @@ import (
 	
 	//"context"
 	_ "embed"
-	//"encoding/json"
+	"encoding/json"
 	"fmt"
 	//"hash/fnv"
 	"io/ioutil"
-	//"math"
-	//"net/http"
-	//"net/url"
+	"math"
+	"net/http"
+	"net/url"
 	"os"
 	//"os/exec"
 	//"runtime"
@@ -54,6 +54,13 @@ type Config struct {
 			Token  string
 			Server string
 		}
+		MQTT struct {
+			Server   string
+			Port     int
+			User     string
+			Password string
+			Topic    string
+		}
         }
 }
 
@@ -62,6 +69,16 @@ type Config struct {
 type MonitorData struct {
 	MQTT map[string]*MQTTMonitorData
 	sync.RWMutex
+}
+
+// Data struct of JSON payload for MQTT alerts.
+type MQTTAlertPayload struct {
+	SensorType string    `json:"type"`
+	SensorName string    `json:"name"`
+	Status     string    `json:"status"`
+	Since      time.Time `json:"since"`
+	Err        string    `json:"error"`
+	Msg        string    `json:"message"`
 }
 
 // MQTTTopic stores status information on a MQTT topic.
@@ -95,7 +112,7 @@ var (
 	logHistory []TimedEntry
 
 	monitorMqttClient mqtt.Client
-
+	alertMqttClient   mqtt.Client
 	monitorData = MonitorData{
 		MQTT: make(map[string]*MQTTMonitorData),
 		//Ping: make(map[string]*PingMonitorData),
@@ -109,7 +126,12 @@ const (
 	// MAXLOGSIZE defines the maximum lenght of the log history maintained (can be overridden in config)
 	MAXLOGSIZE = 1000
 	// Status flags for monitoring.
+	STATUS_OK    = 0
+	STATUS_WARN  = 1
+	STATUS_ERROR = 2
 )
+
+
 func main() {
 	// load initial config
 	if len(os.Args) != 2 {
@@ -118,6 +140,8 @@ func main() {
 	}
 	configFile = os.Args[1]
 	loadConfig()
+	// start monitoring loop
+	monitoringLoop()
 }
 
 
@@ -226,6 +250,9 @@ func setDefaults(c *Config) {
 	if c.Monitor.MQTT.StandardTimeout == 0 {
 		c.Monitor.MQTT.StandardTimeout = 1.5
 	}
+	if c.Alert.MQTT.Port == 0 {
+		c.Alert.MQTT.Port = 1883
+	}
 }
 
 // getConfig returns the current configuration.
@@ -324,4 +351,137 @@ func matchMQTTTopic(pattern string, subject string) bool {
 		}
 	}
 	return plen == slen
+}
+
+func monitoringLoop() {
+	debug("Entering monitoring loop")
+	go func() {
+		for {
+			evaluateMQTT()
+			time.Sleep(time.Second)
+		}
+	}()
+}
+
+// Published an alert message via the methods configured.
+func alert(sensorType string, sensorName string, status int, since time.Time, msg string) {
+
+	// construct and post text alert
+	var s string
+
+	switch status {
+	case STATUS_OK:
+		s = fmt.Sprintf("✓ %s OK for %s, in error since %s ago", sensorType, sensorName, relaTime(since))
+	case STATUS_ERROR:
+		s = fmt.Sprintf("⚠ %s ERROR for %s, last seen %s ago", sensorType, sensorName, relaTime(since))
+		if msg != "" {
+			s = s + fmt.Sprintf(" (%s)", msg)
+		}
+	}
+
+	log(s)
+
+	if getConfig().Alert.Gotify.Token != "" && getConfig().Alert.Gotify.Server != "" {
+		if _, err := http.PostForm(getConfig().Alert.Gotify.Server+"/message?token="+getConfig().Alert.Gotify.Token,
+			url.Values{"message": {s}, "title": {"Janitor alert"}}); err != nil {
+			log("Error in Gotify request: " + err.Error())
+		}
+	}
+
+	// construct and post json payload for MQTT target
+	if getConfig().Alert.MQTT.Server != "" && getConfig().Alert.MQTT.Topic != "" && alertMqttClient != nil {
+		payload := MQTTAlertPayload{sensorType, sensorName, "", since, msg, s}
+		switch status {
+		case STATUS_OK:
+			payload.Status = "OK"
+		case STATUS_ERROR:
+			payload.Status = "ERROR"
+		}
+		b, err := json.Marshal(payload)
+		if err != nil {
+			log("Unable to compile payload for MQTT alert: " + err.Error())
+			return
+		}
+		alertMqttClient.Publish(getConfig().Alert.MQTT.Topic, 0, false, b)
+	}
+}
+
+// Returns human-readable representation of the time duration between 't' and now.
+func relaTime(t time.Time) string {
+	if t.IsZero() {
+		return "inf"
+	}
+	d := time.Since(t).Round(time.Second)
+
+	day := time.Minute * 60 * 24
+	s := ""
+	if d > day {
+		days := d / day
+		d = d - days*day
+		s = fmt.Sprintf("%dd", days)
+	}
+
+	if d < time.Second {
+		return s + d.String()
+	} else if m := d % time.Second; m+m < time.Second {
+		return s + (d - m).String()
+	} else {
+		return s + (d + time.Second - m).String()
+	}
+}
+
+// Periodically evaluate MQTT monitoring targets and issue alerts/recoveries as needed.
+func evaluateMQTT() {
+
+        monitorData.Lock()
+        defer monitorData.Unlock()
+
+        for topic, v := range monitorData.MQTT {
+
+                if v.Deleted {
+                        continue
+                }
+
+                elapsed := time.Now().Sub(v.LastSeen).Seconds()
+
+                var timeout float64
+                // use overridden timeout if specified
+                if v.CustomTimeout > 0 {
+                        timeout = v.CustomTimeout
+                } else {
+                        // use configured timeout otherwise (general, specific)
+                        timeout = v.AvgTransmit * getConfig().Monitor.MQTT.StandardTimeout
+                        for _, t := range getConfig().Monitor.MQTT.Targets {
+                                if matchMQTTTopic(t.Topic, topic) && t.Timeout > 0 {
+                                        timeout = float64(t.Timeout)
+                                        break
+                                }
+                        }
+                }
+
+                // Store calculated timeout for showing on web
+               v.Timeout = timeout
+
+                // no custom timeout is configured, AvgTransmit is not yet established (NaN) -> skip
+                if math.IsNaN(timeout) {
+                        continue
+                }
+
+                if elapsed > timeout {
+                        if v.Status != STATUS_ERROR {
+                                alert("MQTT", topic, STATUS_ERROR, v.LastSeen, fmt.Sprintf("timeout %.2fs", timeout))
+                                v.LastError = time.Now()
+                                v.Alerts++
+                        }
+                        v.Status = STATUS_ERROR
+                } else if v.AvgTransmit > 0 && elapsed > v.AvgTransmit {
+                        v.Status = STATUS_WARN
+                } else {
+                        if v.Status == STATUS_ERROR {
+                                alert("MQTT", topic, STATUS_OK, v.LastError, "")
+                        }
+                        v.Status = STATUS_OK
+                }
+                monitorData.MQTT[topic] = v
+        }
 }
