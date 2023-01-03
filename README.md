@@ -3,7 +3,16 @@
 Projet de sécurisation de domicile
 ## Design
 
-Mettre le diagrammme
+- Composants matériels:
+  - esp32c3
+  - pin64
+  - mangopi
+- Compsants logiciel
+  - mqttclient
+  - mqtt brocker
+  - application GO
+  - gotify 
+
 
 ##Feature
 
