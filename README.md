@@ -7,7 +7,8 @@ Projet de sécurisation de domicile
   - esp32c3
   - pin64
   - mangopi
-- Compsants logiciel
+
+- Composants logiciel
   - mqttclient
   - mqtt brocker
   - application GO
