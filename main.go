@@ -330,33 +330,24 @@ func onMessageReceived(client mqtt.Client, message mqtt.Message) {
 
 }
 
+// Matches and MQTT topic 'subject' to a topic pattern 'pattern', potentially containing wildcard ('#').
+// Returns true if matches, false if not.
 func matchMQTTTopic(pattern string, subject string) bool {
-	sl := strings.Split(subject, "/")
-	pl := strings.Split(pattern, "/")
+        sl := strings.Split(subject, "/")
+        pl := strings.Split(pattern, "/")
 
-	slen := len(sl)
-	plen := len(pl)
-	lasti := plen - 1
-
-	for i := range pl {
-
-		if len(pl[i]) == 0 && len(sl[i]) == 0 {
-			continue
-		}
-		if len(pl[i]) == 0 {
-			continue
-		}
-		if len(sl[i]) == 0 && pl[i][0] != '#' {
-			return false
-		}
-		if pl[i][0] == '#' {
-			return i == lasti
-		}
-		if pl[i][0] != '+' && pl[i] != sl[i] {
-			return false
-		}
-	}
-	return plen == slen
+        for i, _ := range sl {
+                if len(pl)-1 < i {
+                        return false
+                }
+                if pl[i] == "#" {
+                        return true
+                }
+                if pl[i] != sl[i] {
+                        return false
+                }
+        }
+        return true
 }
 
 func monitoringLoop() {
