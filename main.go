@@ -8,7 +8,7 @@ package main
 
 import (
 	
-	//"context"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -18,8 +18,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	//"os/exec"
-	//"runtime"
+	"os/exec"
+	"runtime"
 	//"strconv"
 	"strings"
 	"sync"
@@ -49,12 +49,25 @@ type Config struct {
 				Timeout int
 			}
 		}
+		Exec struct {
+			Interval  int
+			Timeout   int
+			Threshold int
+			Targets   []struct {
+				Name      string
+				Command   string
+				Interval  int
+				Timeout   int
+				Threshold int
+			}
+		}
         }
 	Alert struct {
 		Gotify struct {
 			Token  string
 			Server string
 		}
+		Exec string
 		MQTT struct {
 			Server   string
 			Port     int
@@ -65,10 +78,24 @@ type Config struct {
         }
 }
 
+type ExecMonitorData struct {
+	Name       string
+	LastOK     time.Time
+	LastError  time.Time
+	Status     int32
+	TotalOK    int64
+	TotalError int64
+	Errors     int
+	Timestamp  time.Time
+	Interval   int
+	Timeout    int
+	Threshold  int
+}
 
 // MonitorData stores the actual status data of the monitoring process.
 type MonitorData struct {
 	MQTT map[string]*MQTTMonitorData
+	Exec map[string]*ExecMonitorData
 	sync.RWMutex
 }
 
@@ -190,6 +217,48 @@ func loadConfig() {
 		}
 	}
 
+	// update monitored exec targets
+	for _, target := range getConfig().Monitor.Exec.Targets {
+
+		e, ok := monitorData.Exec[target.Command]
+		if !ok {
+			monitorData.Exec[target.Command] = &ExecMonitorData{}
+			e = monitorData.Exec[target.Command]
+		}
+		e.Name = target.Name
+		if target.Interval != 0 {
+			e.Interval = target.Interval
+		} else if e.Interval == 0 {
+			e.Interval = getConfig().Monitor.Exec.Interval
+		}
+		if target.Timeout != 0 {
+			e.Timeout = target.Timeout
+		} else if e.Timeout == 0 {
+			e.Timeout = getConfig().Monitor.Exec.Timeout
+		}
+		if target.Threshold != 0 {
+			e.Threshold = target.Threshold
+		} else if e.Threshold == 0 {
+			e.Threshold = getConfig().Monitor.Exec.Threshold
+		}
+		monitorData.Exec[target.Command] = e
+	}
+
+	// remove deleted exec targets from monitoring
+	for k := range monitorData.Exec {
+		found := false
+		for _, c := range getConfig().Monitor.Exec.Targets {
+			if k == c.Command {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(monitorData.Exec, k)
+		}
+	}
+
+
 	monitorData.Unlock()
 
 	// connect MQTT if configured
@@ -240,6 +309,24 @@ func loadConfig() {
 			log("Connected to MQTT server for monitoring at " + opts.Servers[0].String())
 		}
 	}
+	// connect MQTT alert topic if configured
+	if getConfig().Alert.MQTT.Server != "" && getConfig().Alert.MQTT.Topic != "" {
+		if alertMqttClient != nil && alertMqttClient.IsConnected() {
+			alertMqttClient.Disconnect(1)
+			debug("Disconnected from MQTT (alerting)")
+		}
+		opts := mqtt.NewClientOptions()
+		opts.AddBroker(fmt.Sprintf("%s://%s:%d", "tcp", getConfig().Alert.MQTT.Server, getConfig().Alert.MQTT.Port))
+		opts.SetUsername(getConfig().Monitor.MQTT.User)
+		opts.SetPassword(getConfig().Monitor.MQTT.Password)
+		alertMqttClient = mqtt.NewClient(opts)
+		if token := alertMqttClient.Connect(); token.Wait() && token.Error() != nil {
+			log("Unable to connect to MQTT for alerting: " + token.Error().Error())
+		} else {
+			log("Connected to MQTT server for alerting at " + opts.Servers[0].String())
+		}
+
+	}
 }
 
 // Set defaults for configuration values.
@@ -255,6 +342,15 @@ func setDefaults(c *Config) {
 	}
 	if c.Monitor.MQTT.StandardTimeout == 0 {
 		c.Monitor.MQTT.StandardTimeout = 1.5
+	}
+	if c.Monitor.Exec.Interval == 0 {
+		c.Monitor.Exec.Interval = 60
+	}
+	if c.Monitor.Exec.Timeout == 0 {
+		c.Monitor.Exec.Timeout = 5000
+	}
+	if c.Monitor.Exec.Threshold == 0 {
+		c.Monitor.Exec.Threshold = 2
 	}
 	if c.Alert.MQTT.Port == 0 {
 		c.Alert.MQTT.Port = 1883
@@ -385,6 +481,16 @@ func alert(sensorType string, sensorName string, status int, since time.Time, ms
 			log("Error in Gotify request: " + err.Error())
 		}
 	}
+	if getConfig().Alert.Exec != "" {
+		cmd := exec.Command("sh", "-c", getConfig().Alert.Exec)
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command(getConfig().Alert.Exec)
+		}
+		cmd.Stdin = strings.NewReader(s)
+		if err := cmd.Run(); err != nil {
+			log("Error in executing " + getConfig().Alert.Exec + ": " + err.Error())
+		}
+	}
 
 	// construct and post json payload for MQTT target
 	if getConfig().Alert.MQTT.Server != "" && getConfig().Alert.MQTT.Topic != "" && alertMqttClient != nil {
@@ -482,4 +588,74 @@ func evaluateMQTT() {
                 }
                 monitorData.MQTT[topic] = v
         }
+}
+// Periodically iterate through exec targets and perform check if required.
+func checkExec() {
+	monitorData.RLock()
+	defer monitorData.RUnlock()
+	for command, e := range monitorData.Exec {
+		ts := e.Timestamp
+		// proceed only if last check (regardless of outcome) was before now minus the configured interval
+		if ts.Add(time.Duration(e.Interval) * time.Second).Before(time.Now()) {
+
+			monitorData.RUnlock()
+			r := performExecCheck(command, e.Timeout)
+			monitorData.Lock()
+
+			e.Timestamp = time.Now()
+			if r {
+				e.TotalOK++
+				e.LastOK = time.Now()
+
+				e.Errors = 0
+				if e.Status == STATUS_ERROR {
+					alert("Exec", e.Name, STATUS_OK, e.LastError, "")
+				}
+				e.Status = STATUS_OK
+			} else {
+				e.Errors++
+				e.TotalError++
+				e.LastError = time.Now()
+
+				// First error will set STATUS_WARN, error will be triggered after the threshold
+				if e.Status == STATUS_OK {
+					e.Status = STATUS_WARN
+				}
+				if e.Status == STATUS_WARN && e.Errors >= e.Threshold {
+					alert("Exec", e.Name, STATUS_ERROR, e.LastOK, "")
+					e.Status = STATUS_ERROR
+				}
+
+			}
+			monitorData.Unlock()
+			monitorData.RLock()
+		}
+
+	}
+}
+
+// Perform exec check for a single target.
+// Return false in case of error or timeout.
+func performExecCheck(command string, timeout int) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Millisecond)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	out, err := cmd.Output()
+	debug(fmt.Sprintf("Exec %s output: %s", command, out))
+	if ctx.Err() == context.DeadlineExceeded {
+		debug(fmt.Sprintf("Exec %s: timeout exceeded", command))
+		return false
+	} else if err != nil {
+		debug(fmt.Sprintf("Exec %s: %s", command, err))
+		return false
+	} else {
+		debug(fmt.Sprintf("Exec %s: OK", command))
+		return true
+	}
 }
