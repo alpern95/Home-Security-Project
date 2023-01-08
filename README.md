@@ -1,6 +1,8 @@
-# Home Security Project [![](https://github.com/alpern95/Home-Security-Project?branch=main)](https://github.com/alpern95/Home-Security-Project)
 # Home-Security-Project
+This projetc is not ready to deploiement
+
 ![Home-Security-Project, ](images/stack.png)
+
 Projet de sécurisation de domicile
 ## Design
 
