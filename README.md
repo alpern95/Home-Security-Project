@@ -21,14 +21,14 @@ Projet de sécurisation de domicile
 ##Principe
 
 - l'esp32c3 publie dans le topic mqtt l'etat de la porte
-  -- porte ferme
-  -- porte ouverte
-- Le programe GO analyse le retour du topip porte (si topic alarm_enclanchée=1
-  -- porte ferme normal
-  -- porte ouverte anormal alert vers gotify
-  -- porte ouverte anormal déclenchemment sirene
-  -- annulation de l'alarme par bouton sur esp32.
-  -- annulation de l'alarme par publication sur gotify.
+  - porte ferme
+  - porte ouverte
+- Le programe GO analyse le retour du topic porte (si topic alarm_enclanchée=1)
+  - porte ferme normal
+  - porte ouverte anormal alert vers gotify
+  - porte ouverte anormal déclenchemment sirene
+  - annulation de l'alarme par bouton sur esp32.
+  - annulation de l'alarme par publication sur gotify.
 
 ### Opération
 
