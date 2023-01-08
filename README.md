@@ -1,3 +1,4 @@
+# gotify/plugin-template [![](https://travis-ci.org/gotify/plugin-template.svg?branch=master)](https://travis-ci.org/gotify/plugin-template)
 # Home-Security-Project [![Build Status][github-action-badge]][github-action] [![FOSSA Status][fossa-badge]]
 ![Home-Security-Project, ](images/stack.png)
 Projet de sécurisation de domicile
