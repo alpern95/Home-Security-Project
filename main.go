@@ -8,7 +8,7 @@ package main
 
 import (
 	
-	"context"
+	//"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -590,72 +590,3 @@ func evaluateMQTT() {
         }
 }
 // Periodically iterate through exec targets and perform check if required.
-func checkExec() {
-	monitorData.RLock()
-	defer monitorData.RUnlock()
-	for command, e := range monitorData.Exec {
-		ts := e.Timestamp
-		// proceed only if last check (regardless of outcome) was before now minus the configured interval
-		if ts.Add(time.Duration(e.Interval) * time.Second).Before(time.Now()) {
-
-			monitorData.RUnlock()
-			r := performExecCheck(command, e.Timeout)
-			monitorData.Lock()
-
-			e.Timestamp = time.Now()
-			if r {
-				e.TotalOK++
-				e.LastOK = time.Now()
-
-				e.Errors = 0
-				if e.Status == STATUS_ERROR {
-					alert("Exec", e.Name, STATUS_OK, e.LastError, "")
-				}
-				e.Status = STATUS_OK
-			} else {
-				e.Errors++
-				e.TotalError++
-				e.LastError = time.Now()
-
-				// First error will set STATUS_WARN, error will be triggered after the threshold
-				if e.Status == STATUS_OK {
-					e.Status = STATUS_WARN
-				}
-				if e.Status == STATUS_WARN && e.Errors >= e.Threshold {
-					alert("Exec", e.Name, STATUS_ERROR, e.LastOK, "")
-					e.Status = STATUS_ERROR
-				}
-
-			}
-			monitorData.Unlock()
-			monitorData.RLock()
-		}
-
-	}
-}
-
-// Perform exec check for a single target.
-// Return false in case of error or timeout.
-func performExecCheck(command string, timeout int) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Millisecond)
-	defer cancel()
-
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, command)
-	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
-	}
-	out, err := cmd.Output()
-	debug(fmt.Sprintf("Exec %s output: %s", command, out))
-	if ctx.Err() == context.DeadlineExceeded {
-		debug(fmt.Sprintf("Exec %s: timeout exceeded", command))
-		return false
-	} else if err != nil {
-		debug(fmt.Sprintf("Exec %s: %s", command, err))
-		return false
-	} else {
-		debug(fmt.Sprintf("Exec %s: OK", command))
-		return true
-	}
-}
