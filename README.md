@@ -34,4 +34,4 @@ Projet de sécurisation de domicile
 
 
 ## Build
-
+go build
