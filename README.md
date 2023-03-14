@@ -4,11 +4,10 @@ This projetc is not ready to deploiement
 
 
 This part is for developping Monitoring of my security Project.
-You can find other part in [MqttalpGotify] (https://github.com/alpern95/MqttalpGotify/).
+![MqttalpGotify] (https://github.com/alpern95/MqttalpGotify/).
 
 I use Janitor but modify to be very light.
-
-Janitor [Janitor] (https://github.com/a-bali/janitor)
+![Janitor] (https://github.com/a-bali/janitor)
 
 Projet de sécurisation de domicile
 
